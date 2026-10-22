@@ -1,50 +1,67 @@
-name: Сборка RockRadioNet Android
+name: Сборка RockRadioNet iOS (IPA)
 
-# Запускается, когда в корень репозитория загружен архив *Android*.zip (или этот файл изменён),
-# а также вручную: Actions → «Сборка RockRadioNet Android» → Run workflow.
+# Запускается, когда в корень репозитория загружен архив *iOS*.zip (или этот файл изменён),
+# а также вручную: Actions → «Сборка RockRadioNet iOS (IPA)» → Run workflow.
+# IPA собирается без подписи: его подписывает Sideloadly на Windows/Mac своим Apple ID.
 on:
   push:
     paths:
-      - "*Android*.zip"
-      - "*android*.zip"
-      - ".github/workflows/build.yml"
+      - "*iOS*.zip"
+      - "*ios*.zip"
+      - ".github/workflows/build-ipa.yml"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  android:
-    name: Android (APK)
-    runs-on: ubuntu-latest
+  ios:
+    name: iOS (IPA)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: "17"
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.7"
+      - name: Выбрать Xcode 16
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer || sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)/Contents/Developer"
       - name: Распаковать проект
         run: |
           echo "Файлы в репозитории:"; ls -la
-          Z=$(ls *[Aa]ndroid*.zip 2>/dev/null | head -1)
-          if [ -z "$Z" ]; then echo "::error::Не найден архив Android (*Android*.zip) в корне репозитория"; exit 1; fi
+          Z=$(ls *[Ii][Oo][Ss]*.zip 2>/dev/null | head -1)
+          if [ -z "$Z" ]; then echo "::error::Не найден архив iOS (*iOS*.zip) в корне репозитория"; exit 1; fi
           echo "Распаковываю: $Z"
           unzip -q "$Z" -d src
-          D=$(dirname "$(find src -name settings.gradle.kts | head -1)")
-          if [ -z "$D" ] || [ "$D" = "." ]; then echo "::error::В архиве нет проекта Android"; exit 1; fi
-          echo "PROJ=$D" >> "$GITHUB_ENV"
-      - name: Собрать APK
-        run: cd "$PROJ" && gradle assembleRelease --no-daemon --stacktrace
-      - name: Подготовить файл
-        run: cp "$PROJ"/app/build/outputs/apk/release/*.apk RockRadioNet.apk
+          D=$(dirname "$(find src -name project.yml | head -1)")
+          if [ -z "$D" ] || [ "$D" = "." ]; then echo "::error::В архиве нет проекта iOS (project.yml)"; exit 1; fi
+          echo "PROJ=$PWD/$D" >> "$GITHUB_ENV"
+      - name: Установить XcodeGen
+        run: brew install xcodegen
+      - name: Создать проект Xcode
+        run: cd "$PROJ" && xcodegen generate
+      - name: Собрать приложение (без подписи)
+        run: |
+          cd "$PROJ" && xcodebuild \
+            -project RockRadioNet.xcodeproj \
+            -scheme RockRadioNet \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+      - name: Упаковать IPA
+        run: |
+          APP="$PROJ/build/Build/Products/Release-iphoneos/RockRadioNet.app"
+          if [ ! -d "$APP" ]; then echo "::error::Приложение не собралось"; exit 1; fi
+          rm -rf Payload && mkdir Payload && cp -R "$APP" Payload/
+          zip -qr RockRadioNet.ipa Payload
+          rm -rf Payload
+          ls -la RockRadioNet.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: RockRadioNet-APK
-          path: RockRadioNet.apk
+          name: RockRadioNet-IPA
+          path: RockRadioNet.ipa
       - name: Выложить в Releases
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "android-${{ github.run_number }}-${{ github.run_attempt }}" RockRadioNet.apk --repo "${{ github.repository }}" --title "RockRadioNet для Android — сборка ${{ github.run_number }}" --notes "Скачайте RockRadioNet.apk и установите на телефон или телевизор."
+        run: gh release create "ios-${{ github.run_number }}-${{ github.run_attempt }}" RockRadioNet.ipa --repo "${{ github.repository }}" --title "RockRadioNet для iOS — сборка ${{ github.run_number }}" --notes "Скачайте RockRadioNet.ipa и установите через Sideloadly (подпишите своим Apple ID)."
